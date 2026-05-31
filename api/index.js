@@ -231,6 +231,11 @@ export default async function handler(req, res) {
         return res.status(200).json(output);
 
     } catch (error) {
-        return res.status(500).json({ error: "Provider Timeout", message: "Upstream provider failed to respond in time." });
+        return res.status(500).json({ 
+            error: "Provider Timeout", 
+            message: "Upstream provider failed to respond in time or connection failed.", 
+            details: error.message,
+            target_url: builtUrl.href 
+        });
     }
 }
