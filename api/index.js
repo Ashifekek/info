@@ -215,8 +215,9 @@ export default async function handler(req, res) {
         }
         
         const replacers = apiConfig.replace_words || [];
-        replacers.forEach(rw => {
-            if (rw.target) {
+        const replacersArray = Array.isArray(replacers) ? replacers : Object.values(replacers);
+        replacersArray.forEach(rw => {
+            if (rw && rw.target) {
                 const searchRegex = new RegExp(rw.target, 'gi');
                 rawJson = rawJson.replace(searchRegex, rw.replacement || "");
             }
