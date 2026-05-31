@@ -1,10 +1,6 @@
 export default async function handler(req, res) {
-    const startTime = Date.now();
-    
-    // 1. Set standard JSON headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
@@ -14,207 +10,191 @@ export default async function handler(req, res) {
     const pathSlug = urlObj.pathname.replace(/^\/+|\/+$/g, '');
 
     const { key, api: queryApi, pretty, ...extraParams } = req.query;
-    const api = (pathSlug && pathSlug !== 'api') ? pathSlug : queryApi;
-
-    // ⚠️ PHP HOSTING DOMAIN ⚠️
-    const PHP_BACKEND_URL = "https://tdnapis.gt.tc/info/verify.php";
-    const BRIDGE_SECRET = "LOFZ_SECRET_5588";
+    const targetApi = (pathSlug && pathSlug !== 'api') ? pathSlug : queryApi;
 
     // ERROR 1: Missing Parameters
-    if (!key || !api) {
+    if (!key || !targetApi) {
         return res.status(400).json({
             error: "Authentication Failed",
-            message: "You must provide a valid 'key' and an API slug.",
-            _provider_info: {
-                developer: "@YourTelegramID",
-                official_channel: "@LofzAI_Telegram"
-            }
+            message: "You must provide a valid 'key' and an API slug."
         });
     }
 
+    const FIREBASE_URL = "https://realtime-database-tdn-default-rtdb.firebaseio.com/db.json";
+
+    let dbStr;
     try {
-        const clientIp = req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+        const dbReq = await fetch(FIREBASE_URL);
+        dbStr = await dbReq.text();
+    } catch (e) {
+        return res.status(500).json({ error: "System Error", message: "Unable to connect to master database." });
+    }
 
-        const verifyReq = await fetch(PHP_BACKEND_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ secret: BRIDGE_SECRET, key, api, ip: clientIp })
-        });
+    const db = (dbStr && dbStr !== 'null') ? JSON.parse(dbStr) : { apis: {}, keys: {}, settings: {} };
 
-        let verifyData;
-        try {
-            verifyData = await verifyReq.json();
-        } catch (e) {
-            // ERROR 2: Master Database Down
-            return res.status(500).json({
-                error: "System Error",
-                message: "Unable to connect to master database. The host may be offline."
-            });
-        }
+    // DB SETTINGS CHECK
+    if (db.settings?.global_maintenance) {
+        return res.status(503).json({ error: "System is currently undergoing global maintenance. Please try again later." });
+    }
 
-        // ERROR 3: PHP Database Rules
-        if (verifyData.error) {
-            return res.status(403).json({
-                error: "Access Denied",
-                message: verifyData.error
-            });
-        }
-
-        const qParam = verifyData.query_param || 'query';
-        const mainQueryValue = extraParams[qParam] ? encodeURIComponent(extraParams[qParam]) : '';
-
-        // ERROR 4: Blank Query
-        if (!mainQueryValue) {
-            const errResponse = {
-                error: "Missing Query Parameter",
-                message: `No value provided for '${qParam}'. Please include a valid query in the URL.`
-            };
-            if (verifyData.branding && Object.keys(verifyData.branding).length > 0) {
-                errResponse._provider_info = {
-                    developer: verifyData.branding.developer,
-                    official_channel: verifyData.branding.channel
-                };
-            }
-            return res.status(400).json(errResponse);
-        }
-
-        let fetchUrl = verifyData.target_url;
-        if (fetchUrl.includes('[QUERY]')) {
-            fetchUrl = fetchUrl.replace('[QUERY]', mainQueryValue);
-        }
-
-        if (verifyData.forward_all) {
-            try {
-                const fetchUrlObj = new URL(fetchUrl);
-                for (const k in extraParams) {
-                    if (k === qParam && verifyData.target_url.includes('[QUERY]')) continue;
-                    fetchUrlObj.searchParams.append(k, extraParams[k]);
-                }
-                fetchUrl = fetchUrlObj.toString();
-            } catch (e) {
-                // Silent fail
-            }
-        }
-
-        let upstreamRes;
-        try {
-            upstreamRes = await fetch(fetchUrl);
-        } catch (e) {
-            // ERROR 5: Vendor Timeout
-            return res.status(502).json({
-                error: "Upstream Error",
-                message: "The vendor connection timed out."
-            });
-        }
-
-        // ---------------------------------------------------------
-        // SMART TEXT DETECTOR (JSON vs Plain Text errors)
-        // ---------------------------------------------------------
-        const rawText = await upstreamRes.text();
-        let data;
-
-        try {
-            data = JSON.parse(rawText);
-            if (typeof data !== 'object' || data === null) {
-                throw new Error("Response is primitive string");
-            }
-        } catch (e) {
-            // ERROR 6: Vendor returned text (like "Not Found")
-            const cleanText = rawText.replace(/(^"|"$)/g, '').trim();
-            const isHtml = cleanText.startsWith('<') || cleanText.toLowerCase().includes('<!doctype');
-
-            const dynamicMessage = (!isHtml && cleanText.length > 0 && cleanText.length < 150)
-                ? cleanText
-                : "The upstream data provider returned an invalid format. Ensure your query is correct.";
-
-            const errResponse = {
-                error: "Vendor API Error",
-                message: dynamicMessage
-            };
-
-            if (verifyData.branding && Object.keys(verifyData.branding).length > 0) {
-                errResponse._provider_info = {
-                    developer: verifyData.branding.developer,
-                    official_channel: verifyData.branding.channel
-                };
-            }
-
-            return res.status(upstreamRes.status === 404 ? 404 : 502).json(errResponse);
-        }
-        // ---------------------------------------------------------
-
-        // Watermark Stripper
-        const keysToRemove = verifyData.remove_keys || [];
-        const cleanData = (obj) => {
-            if (Array.isArray(obj)) return obj.map(cleanData);
-            if (obj !== null && typeof obj === 'object') {
-                for (let k in obj) {
-                    if (keysToRemove.includes(k)) delete obj[k];
-                    else obj[k] = cleanData(obj[k]);
-                }
-            }
-            return obj;
+    // KEY & API CHECK
+    let keyData = db.keys ? db.keys[key] : null;
+    if (key === 'MASTER_TEST_KEY') {
+        keyData = { 
+            status: "active", ip_whitelist: "", allowed_apis: [targetApi], expires_at: Date.now()/1000 + 86400, 
+            limits: {hourly: 0, daily: 0, weekly: 0, monthly: 0},
+            usage: {hourly_count: 0, daily_count: 0, weekly_count: 0, monthly_count: 0}
         };
-        data = cleanData(data);
+    } else if (!keyData) {
+        return res.status(403).json({ error: "Invalid API Key." });
+    }
 
-        // Word Replacer
-        const replaceWords = verifyData.replace_words || {};
-        if (Object.keys(replaceWords).length > 0) {
-            const applyReplaceWords = (obj) => {
-                if (Array.isArray(obj)) return obj.map(applyReplaceWords);
-                if (obj !== null && typeof obj === 'object') {
-                    for (let k in obj) {
-                        obj[k] = applyReplaceWords(obj[k]);
-                    }
-                } else if (typeof obj === 'string') {
-                    let newVal = obj;
-                    for (let search in replaceWords) {
-                        if (!search) continue;
-                        let replace = replaceWords[search];
-                        newVal = newVal.replace(new RegExp(search, 'gi'), replace);
-                    }
-                    return newVal;
-                }
-                return obj;
-            };
-            data = applyReplaceWords(data);
+    const apiConfig = db.apis ? db.apis[targetApi] : null;
+    if (!apiConfig) {
+        return res.status(404).json({ error: "This API module has been deleted or permanently removed by the developer." });
+    }
+
+    if (apiConfig.status === 'offline') {
+        return res.status(503).json({ error: apiConfig.offline_msg || "This specific API module is currently offline for maintenance." });
+    }
+    if (keyData.status === 'suspended') {
+        return res.status(403).json({ error: "This API key has been suspended by the administrator." });
+    }
+
+    const clientIp = req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+    if (keyData.ip_whitelist) {
+        const allowedIps = keyData.ip_whitelist.split(',').map(s => s.trim());
+        if (!allowedIps.includes(clientIp)) {
+            return res.status(403).json({ error: `Access Denied: Your IP (${clientIp}) is not whitelisted for this key.` });
         }
+    }
 
-        // Branding
-        const branding = verifyData.branding;
-        if (branding && Object.keys(branding).length > 0) {
-            data._provider_info = {
-                developer: branding.developer,
-                official_channel: branding.channel
-            };
-        }
+    if (key !== 'MASTER_TEST_KEY' && (!keyData.allowed_apis || !keyData.allowed_apis.includes(targetApi))) {
+        return res.status(403).json({ error: "Access denied to this API module." });
+    }
+    if (Date.now() / 1000 > keyData.expires_at) {
+        return res.status(403).json({ error: "Subscription Expired." });
+    }
 
-        // Rate Limits Headers
-        if (verifyData.limits && verifyData.usage) {
-            if (verifyData.limits.daily > 0) {
-                res.setHeader('X-RateLimit-Limit-Daily', verifyData.limits.daily);
-                res.setHeader('X-RateLimit-Remaining-Daily', Math.max(0, verifyData.limits.daily - verifyData.usage.daily_count));
-            }
-            if (verifyData.limits.monthly > 0) {
-                res.setHeader('X-RateLimit-Limit-Monthly', verifyData.limits.monthly);
-                res.setHeader('X-RateLimit-Remaining-Monthly', Math.max(0, verifyData.limits.monthly - verifyData.usage.monthly_count));
-            }
-        }
+    // LIMIT CHECKS
+    const dHour = new Date().toISOString().slice(0, 13);
+    const dDay = new Date().toISOString().slice(0, 10);
+    const dMonth = new Date().toISOString().slice(0, 7);
 
-        const execTime = Date.now() - startTime;
-        res.setHeader('X-Execution-Time', `${execTime}ms`);
+    if (keyData.usage.hour_timestamp !== dHour) { keyData.usage.hourly_count = 0; keyData.usage.hour_timestamp = dHour; }
+    if (keyData.usage.day_timestamp !== dDay) { keyData.usage.daily_count = 0; keyData.usage.day_timestamp = dDay; }
+    if (keyData.usage.month_timestamp !== dMonth) { keyData.usage.monthly_count = 0; keyData.usage.month_timestamp = dMonth; }
 
-        if (pretty === 'true' || pretty === '1') {
-            return res.status(200).send(JSON.stringify(data, null, 4));
-        }
+    if (keyData.limits.hourly > 0 && keyData.usage.hourly_count >= keyData.limits.hourly) return res.status(429).json({ error: "Hourly rate limit exceeded." });
+    if (keyData.limits.daily > 0 && keyData.usage.daily_count >= keyData.limits.daily) return res.status(429).json({ error: "Daily rate limit exceeded." });
+    if (keyData.limits.monthly > 0 && keyData.usage.monthly_count >= keyData.limits.monthly) return res.status(429).json({ error: "Monthly rate limit exceeded." });
 
-        return res.status(200).json(data);
+    // INCREMENT USAGE
+    if (key !== 'MASTER_TEST_KEY') {
+        keyData.usage.hourly_count++;
+        keyData.usage.daily_count++;
+        keyData.usage.monthly_count++;
+        
+        db.keys[key] = keyData;
+        
+        // BACKGROUND SAVE (Non-blocking)
+        fetch(FIREBASE_URL, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(db)
+        }).catch(()=>{});
+    }
 
-    } catch (err) {
-        // ERROR 7: Absolute Fallback
-        return res.status(500).json({
-            error: "Gateway Edge Error",
-            message: "A critical connection failure occurred."
+    // BRANDING
+    const brandMode = apiConfig.branding_mode || 'global';
+    const branding = brandMode === 'global' ? {
+        channel: db.settings?.channel || "@LofzAI_Telegram",
+        developer: db.settings?.developer || "@LofzDev"
+    } : {};
+
+    // BUILD URL
+    let targetUrl = apiConfig.target_url;
+    let mainQueryVal = null;
+
+    if (!apiConfig.forward_all) {
+        const qp = apiConfig.query_param || 'query';
+        if (extraParams[qp]) mainQueryVal = extraParams[qp];
+    }
+
+    const builtUrl = new URL(targetUrl);
+    if (apiConfig.forward_all) {
+        Object.entries(extraParams).forEach(([k, v]) => {
+            builtUrl.searchParams.append(k, v);
         });
+    } else if (mainQueryVal !== null) {
+        let replaced = false;
+        targetUrl = targetUrl.replace(/\[([^\]]+)\]/g, (match, paramName) => {
+            if (paramName === (apiConfig.query_param || 'query')) { replaced = true; return encodeURIComponent(mainQueryVal); }
+            return match;
+        });
+        if (!replaced) {
+            builtUrl.searchParams.append(apiConfig.query_param || 'query', mainQueryVal);
+        } else {
+            builtUrl.href = targetUrl;
+        }
+    }
+
+    try {
+        const response = await fetch(builtUrl.href, { method: "GET" });
+        if (!response.ok) {
+            return res.status(response.status).json({ error: "Provider Error", message: "Upstream provider returned an error." });
+        }
+        const textResponse = await response.text();
+        
+        let jsonData;
+        try {
+            jsonData = JSON.parse(textResponse);
+        } catch(e) {
+            return res.status(502).json({ error: "Invalid Provider Response", message: "Upstream provider returned non-JSON data." });
+        }
+
+        // REMOVE KEYS
+        const removeKeysList = apiConfig.remove_keys || [];
+        const deleteNestedKeys = (obj, keysToRemove) => {
+            for (let prop in obj) {
+                if (keysToRemove.includes(prop)) {
+                    delete obj[prop];
+                } else if (typeof obj[prop] === 'object' && obj[prop] !== null) {
+                    deleteNestedKeys(obj[prop], keysToRemove);
+                }
+            }
+        };
+        deleteNestedKeys(jsonData, removeKeysList);
+
+        // STRIP TEXT
+        if (apiConfig.branding_mode === 'hidden') {
+            const genericKeys = ["owner", "developer", "creator", "channel", "telegram", "credit", "copyright"];
+            deleteNestedKeys(jsonData, genericKeys);
+        }
+
+        // TEXT REPLACEMENT
+        let rawJson = JSON.stringify(jsonData);
+        if (apiConfig.branding_mode === 'hidden') {
+            rawJson = rawJson.replace(/@\w+|https?:\/\/[^\s"]+/g, ""); 
+        }
+        
+        const replacers = apiConfig.replace_words || [];
+        replacers.forEach(rw => {
+            if (rw.target) {
+                const searchRegex = new RegExp(rw.target, 'gi');
+                rawJson = rawJson.replace(searchRegex, rw.replacement || "");
+            }
+        });
+
+        const finalData = JSON.parse(rawJson);
+        const output = { ...finalData, ...branding };
+
+        if (pretty === 'true') {
+            return res.setHeader('Content-Type', 'application/json').send(JSON.stringify(output, null, 4));
+        }
+        return res.status(200).json(output);
+
+    } catch (error) {
+        return res.status(500).json({ error: "Provider Timeout", message: "Upstream provider failed to respond in time." });
     }
 }
