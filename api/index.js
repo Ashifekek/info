@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     const api = (pathSlug && pathSlug !== 'api') ? pathSlug : queryApi;
 
     // ⚠️ PHP HOSTING DOMAIN ⚠️
-    const PHP_BACKEND_URL = "https://lifeatface.in/works/api/verify.php";
+    const PHP_BACKEND_URL = "https://tdnapis.gt.tc/info/verify.php";
     const BRIDGE_SECRET = "LOFZ_SECRET_5588";
 
     // ERROR 1: Missing Parameters
