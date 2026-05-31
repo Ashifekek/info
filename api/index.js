@@ -88,10 +88,18 @@ export default async function handler(req, res) {
         return res.status(403).json({ error: "Subscription Expired." });
     }
 
-    // LIMIT CHECKS
-    const dHour = new Date().toISOString().slice(0, 13);
-    const dDay = new Date().toISOString().slice(0, 10);
-    const dMonth = new Date().toISOString().slice(0, 7);
+    // LIMIT CHECKS (INDIAN TIME - IST)
+    const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false });
+    const parts = formatter.formatToParts(new Date());
+    const ist = {};
+    parts.forEach(p => ist[p.type] = p.value);
+    
+    // Format: YYYY-MM-DD
+    const dDay = `${ist.year}-${ist.month}-${ist.day}`;
+    // Format: YYYY-MM-DDTHH
+    const dHour = `${dDay}T${ist.hour}`;
+    // Format: YYYY-MM
+    const dMonth = `${ist.year}-${ist.month}`;
 
     if (keyData.usage.hour_timestamp !== dHour) { keyData.usage.hourly_count = 0; keyData.usage.hour_timestamp = dHour; }
     if (keyData.usage.day_timestamp !== dDay) { keyData.usage.daily_count = 0; keyData.usage.day_timestamp = dDay; }
