@@ -32,6 +32,17 @@ export default async function handler(req, res) {
 
     const db = (dbStr && dbStr !== 'null') ? JSON.parse(dbStr) : { apis: {}, keys: {}, settings: {} };
 
+    const sendAlert = (msg) => {
+        if (db.settings?.bot_token && db.settings?.admin_chat_id) {
+            const url = `https://api.telegram.org/bot${db.settings.bot_token}/sendMessage`;
+            fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ chat_id: db.settings.admin_chat_id, text: msg, parse_mode: 'Markdown' })
+            }).catch(()=>{});
+        }
+    };
+
     // DB SETTINGS CHECK
     if (db.settings?.global_maintenance) {
         return res.status(503).json({ error: "System is currently undergoing global maintenance. Please try again later." });
@@ -58,6 +69,7 @@ export default async function handler(req, res) {
         return res.status(503).json({ error: apiConfig.offline_msg || "This specific API module is currently offline for maintenance." });
     }
     if (keyData.status === 'suspended') {
+        sendAlert(`🚨 *Security Alert*\nSuspended Key \`${key}\` attempted to access \`${targetApi}\`.`);
         return res.status(403).json({ error: "This API key has been suspended by the administrator." });
     }
 
@@ -85,9 +97,18 @@ export default async function handler(req, res) {
     if (keyData.usage.day_timestamp !== dDay) { keyData.usage.daily_count = 0; keyData.usage.day_timestamp = dDay; }
     if (keyData.usage.month_timestamp !== dMonth) { keyData.usage.monthly_count = 0; keyData.usage.month_timestamp = dMonth; }
 
-    if (keyData.limits.hourly > 0 && keyData.usage.hourly_count >= keyData.limits.hourly) return res.status(429).json({ error: "Hourly rate limit exceeded." });
-    if (keyData.limits.daily > 0 && keyData.usage.daily_count >= keyData.limits.daily) return res.status(429).json({ error: "Daily rate limit exceeded." });
-    if (keyData.limits.monthly > 0 && keyData.usage.monthly_count >= keyData.limits.monthly) return res.status(429).json({ error: "Monthly rate limit exceeded." });
+    if (keyData.limits.hourly > 0 && keyData.usage.hourly_count >= keyData.limits.hourly) {
+        sendAlert(`⚠️ *Rate Limit Exceeded*\nKey \`${key}\` hit the hourly limit on \`${targetApi}\`.`);
+        return res.status(429).json({ error: "Hourly rate limit exceeded." });
+    }
+    if (keyData.limits.daily > 0 && keyData.usage.daily_count >= keyData.limits.daily) {
+        sendAlert(`⚠️ *Rate Limit Exceeded*\nKey \`${key}\` hit the daily limit on \`${targetApi}\`.`);
+        return res.status(429).json({ error: "Daily rate limit exceeded." });
+    }
+    if (keyData.limits.monthly > 0 && keyData.usage.monthly_count >= keyData.limits.monthly) {
+        sendAlert(`⚠️ *Rate Limit Exceeded*\nKey \`${key}\` hit the monthly limit on \`${targetApi}\`.`);
+        return res.status(429).json({ error: "Monthly rate limit exceeded." });
+    }
 
     // INCREMENT USAGE
     if (key !== 'MASTER_TEST_KEY') {
