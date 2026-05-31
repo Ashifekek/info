@@ -114,29 +114,36 @@ export default async function handler(req, res) {
 
     // BUILD URL
     let targetUrl = apiConfig.target_url;
-    let mainQueryVal = null;
+    const qp = apiConfig.query_param || 'query';
+    let mainQueryVal = extraParams[qp] || null;
 
-    if (!apiConfig.forward_all) {
-        const qp = apiConfig.query_param || 'query';
-        if (extraParams[qp]) mainQueryVal = extraParams[qp];
-    }
+    let replacedKeys = new Set();
+    targetUrl = targetUrl.replace(/\[([^\]]+)\]/gi, (match, paramName) => {
+        let pName = paramName.toLowerCase();
+        if (pName === 'query' || pName === qp.toLowerCase()) {
+            if (mainQueryVal !== null) {
+                replacedKeys.add(qp);
+                return encodeURIComponent(mainQueryVal);
+            }
+        } else {
+            let foundKey = Object.keys(extraParams).find(k => k.toLowerCase() === pName);
+            if (foundKey) {
+                replacedKeys.add(foundKey);
+                return encodeURIComponent(extraParams[foundKey]);
+            }
+        }
+        return match;
+    });
 
     const builtUrl = new URL(targetUrl);
     if (apiConfig.forward_all) {
         Object.entries(extraParams).forEach(([k, v]) => {
-            builtUrl.searchParams.append(k, v);
+            if (!replacedKeys.has(k)) {
+                builtUrl.searchParams.append(k, v);
+            }
         });
-    } else if (mainQueryVal !== null) {
-        let replaced = false;
-        targetUrl = targetUrl.replace(/\[([^\]]+)\]/g, (match, paramName) => {
-            if (paramName === (apiConfig.query_param || 'query')) { replaced = true; return encodeURIComponent(mainQueryVal); }
-            return match;
-        });
-        if (!replaced) {
-            builtUrl.searchParams.append(apiConfig.query_param || 'query', mainQueryVal);
-        } else {
-            builtUrl.href = targetUrl;
-        }
+    } else if (mainQueryVal !== null && !replacedKeys.has(qp)) {
+        builtUrl.searchParams.append(qp, mainQueryVal);
     }
 
     try {
