@@ -134,12 +134,11 @@ export default async function handler(req, res) {
         }).catch(()=>{});
     }
 
-    // BRANDING
-    const brandMode = apiConfig.branding_mode || 'global';
-    const branding = brandMode === 'global' ? {
+    // ALWAYS ADD OWNER BRANDING
+    const branding = {
         channel: db.settings?.channel || "@LofzAI_Telegram",
         developer: db.settings?.developer || "@LofzDev"
-    } : {};
+    };
 
     // BUILD URL
     let targetUrl = apiConfig.target_url;
@@ -177,15 +176,16 @@ export default async function handler(req, res) {
 
     try {
         const response = await fetch(builtUrl.href, { method: "GET" });
-        if (!response.ok) {
-            return res.status(response.status).json({ error: "Provider Error", message: "Upstream provider returned an error." });
-        }
         const textResponse = await response.text();
+        const responseStatus = response.status;
         
         let jsonData;
         try {
             jsonData = JSON.parse(textResponse);
         } catch(e) {
+            if (!response.ok) {
+                return res.status(responseStatus).json({ error: "Provider Error", message: textResponse.substring(0, 200) });
+            }
             return res.status(502).json({ error: "Invalid Provider Response", message: "Upstream provider returned non-JSON data." });
         }
 
@@ -224,12 +224,22 @@ export default async function handler(req, res) {
         });
 
         const finalData = JSON.parse(rawJson);
-        const output = { ...finalData, ...branding };
+        
+        let output;
+        if (Array.isArray(finalData)) {
+            // Push branding as a new object inside the array so we don't break the array structure
+            finalData.push(branding);
+            output = finalData;
+        } else if (typeof finalData === 'object' && finalData !== null) {
+            output = { ...finalData, ...branding };
+        } else {
+            output = { data: finalData, ...branding };
+        }
 
         if (pretty === 'true') {
-            return res.setHeader('Content-Type', 'application/json').send(JSON.stringify(output, null, 4));
+            return res.status(responseStatus).setHeader('Content-Type', 'application/json').send(JSON.stringify(output, null, 4));
         }
-        return res.status(200).json(output);
+        return res.status(responseStatus).json(output);
 
     } catch (error) {
         return res.status(500).json({ 
