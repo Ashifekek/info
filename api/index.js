@@ -134,10 +134,34 @@ export default async function handler(req, res) {
         }).catch(()=>{});
     }
 
+    // COMPUTE KEY EXPIRY
+    let key_expiry = null;
+    if (key !== 'MASTER_TEST_KEY' && keyData.expires_at) {
+        const expTime = keyData.expires_at * 1000;
+        const nowTime = Date.now();
+        const diffMs = Math.max(0, expTime - nowTime);
+        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+        
+        const expDate = new Date(expTime);
+        const formatterExp = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit', second:'2-digit', hour12: false });
+        const p = formatterExp.formatToParts(expDate);
+        const expIst = {}; p.forEach(x => expIst[x.type] = x.value);
+        const formattedExp = `${expIst.year}-${expIst.month}-${expIst.day} ${expIst.hour}:${expIst.minute}:${expIst.second} IST`;
+
+        key_expiry = {
+            expires_in: `${diffDays}d ${diffHours}h`,
+            expires_at: formattedExp
+        };
+    } else {
+         key_expiry = { expires_in: "Unlimited", expires_at: "Never" };
+    }
+
     // ALWAYS ADD OWNER BRANDING
     const branding = {
         channel: db.settings?.channel || "@LofzAI_Telegram",
-        developer: db.settings?.developer || "@LofzDev"
+        developer: db.settings?.developer || "@LofzDev",
+        key_expiry: key_expiry
     };
 
     // BUILD URL
@@ -176,8 +200,17 @@ export default async function handler(req, res) {
 
     try {
         const response = await fetch(builtUrl.href, { method: "GET" });
-        const textResponse = await response.text();
         const responseStatus = response.status;
+        
+        // HANDLE RAW RESPONSES (No Branding/Parsing)
+        if (apiConfig.response_type === 'raw') {
+            const buffer = await response.arrayBuffer();
+            return res.status(responseStatus)
+                      .setHeader('Content-Type', response.headers.get('Content-Type') || 'application/octet-stream')
+                      .send(Buffer.from(buffer));
+        }
+
+        const textResponse = await response.text();
         
         let jsonData;
         try {
