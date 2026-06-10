@@ -1,0 +1,10 @@
+{
+  "name": "session-zip-api",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "archiver": "^6.0.0",
+    "node-fetch": "^2.7.0",
+    "form-data": "^4.0.0"
+  }
+}
