@@ -1,7 +1,6 @@
 const archiver = require('archiver');
 const FormData = require('form-data');
 const fetch = require('node-fetch');
-const { PassThrough } = require('stream');
 
 module.exports = async (req, res) => {
   // CORS
@@ -31,38 +30,31 @@ module.exports = async (req, res) => {
       archive.on('end', () => resolve(Buffer.concat(chunks)));
       archive.on('error', reject);
 
-      // Add each session as a .session file
-      // Also create an info.txt with phone + 2FA details
-      let infoLines = [`===== BULK ORDER: ${order_id} =====`, `Accounts: ${accounts.length}`, '=' .repeat(50), ''];
+      // Create ONE .session file with all sessions (one per row)
+      const allSessions = accounts.map(acc => acc.session || '').join('\n');
+      archive.append(allSessions, { name: `${order_id}.session` });
+
+      // Create INFO.txt with phone + 2FA details
+      let infoLines = [`===== BULK ORDER: ${order_id} =====`, `Accounts: ${accounts.length}`, '='.repeat(50), ''];
 
       accounts.forEach((acc, i) => {
         const phone = (acc.phone || `Account_${i + 1}`).replace('+', '').replace(' ', '');
-        const session = acc.session || '';
         const password = acc.password || '';
 
-        // Add .session file
-        if (session) {
-          archive.append(session, { name: `${phone}.session` });
-        }
-
-        // Add to info file
         infoLines.push(`--- Account #${i + 1} ---`);
         infoLines.push(`Phone: ${acc.phone || phone}`);
         if (password) infoLines.push(`2FA Password: ${password}`);
-        infoLines.push(`Session File: ${phone}.session`);
         infoLines.push('');
       });
 
-      // Add info.txt
       archive.append(infoLines.join('\n'), { name: 'INFO.txt' });
-
       archive.finalize();
     });
 
     // Send ZIP to Telegram via Bot API
     const form = new FormData();
     form.append('chat_id', chat_id);
-    form.append('caption', caption || `📦 ${accounts.length} session files | ${order_id}`);
+    form.append('caption', caption || `📦 ${accounts.length} sessions | ${order_id}`);
     form.append('document', zipBuffer, {
       filename: `${order_id}.zip`,
       contentType: 'application/zip'
@@ -81,7 +73,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({
         ok: true,
         file_id: fileId,
-        message: `ZIP sent: ${accounts.length} .session files`
+        message: `ZIP sent: ${accounts.length} sessions in 1 file`
       });
     } else {
       return res.status(500).json({
